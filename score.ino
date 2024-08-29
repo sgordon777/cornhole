@@ -1,7 +1,7 @@
 #include "LowPower.h"
 
 #include "math.h"
-#define SCORE_NODEC_VER (5)
+#define SCORE_NODEC_VER (6)
 // Chip: ATMEGA328P
 //   Oscillator=8Mhz internal
 //   Bootloader=none
@@ -221,21 +221,9 @@ void app_sm()
   int seg_val;
   if (app_st == STATE_SELFTEST)
   {
-#if 0
-    int L = sizeof(testmap1) / sizeof(int);
-    if (st_step < L)           // Cycle through segments
+    if (br_step < 114)   // cycle through brightness
     {
-      seg_val = testmap1[st_step % L];
-      disp_seg(MSB_DIG, seg_val);
-      seg_val = testmap2[st_step % L];
-      disp_seg(LSB_DIG, seg_val);
-      if (tick_ct % STEST_RATE == 0) st_step = st_step + 1;
-    }
-    else
-#endif
-    if (br_step < 100)   // cycle through brightness
-    {
-      pwm_val = int(PWM_MAX2 + PWM_MAX2*sin( 2 * 2 * 3.1415 * br_step / 100 ));
+      pwm_val = int(PWM_MAX2 - PWM_MAX2*cos(2 * 2 * 3.1415 * br_step / 100 ));
       disp_seg(MSB_DIG, 127);
       disp_seg(LSB_DIG, 127);
       br_step = br_step + 1;
@@ -251,7 +239,6 @@ void app_sm()
     else
     {
       app_st = STATE_IDLE;
-//      st_step = 0;
       pwm_val = last_pwm_val;
     }
   }
@@ -502,4 +489,3 @@ void enable_io()
 // {TBD} set unconnected pins to INPUT_PULLUP
 
 }
-
