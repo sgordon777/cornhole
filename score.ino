@@ -1,7 +1,21 @@
 #include "LowPower.h"
-#include "math.h"
 
-//#define USES_UART
+#include "math.h"
+// SCORE_NODEC v1.0
+// Chip: ATMEGA328P
+//   Oscillator=8Mhz internal
+//   Bootloader=none
+//   Brownout=none 
+// History
+//   12/11/2022: v1.0 declared
+//
+// 
+//
+//
+
+
+
+#define USES_UART
 
 #ifdef USES_UART
   #define DBG_MSG(x) Serial.println(x)
@@ -10,24 +24,31 @@
   #define DBG_MSG(x)
 #endif
 
-// define IO pin functions"
-
-#define BOARD_LED (LED_BUILTIN)
-#define CABINET_LIGHT (5)
-#define V12_EN (7)
+// define IO pin functions
+#define BOARD_LED (5)
+#define V12_EN (4)
 #define BUT1 (2)
-#define PWM_MOD (11)
+#define PWM_MOD (3)
 
-#define N_BCD (4)
 #define N_DIG (2)
+#define N_SEG (7)
 #define MSB_DIG (0)
 #define LSB_DIG (1)
-const int seg_gpio[N_DIG][N_BCD] = { {9, 16, 12, 10}, {14, 19, 18, 15}  }; // BCD binary digitsn, MSB/LSB order
+// GPIO for each segment
+const int seg_gpio[N_DIG][N_SEG] = 
+{ 
+  {8, 7, 6, 9, 10, 11, 12}, 
+  {13, 14, 15, 16, 17, 18, 19} 
+}; 
 
-int testmap[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
+// segment bitmap for each digit
+int seg_bitmap[2][10] = 
+{ 
+  {0, 6,   91, 121, 116, 109, 111, 56, 127, 125}, 
+  {63, 48, 91, 121, 116, 109, 111, 56, 127, 125} 
+};
 
-
-// define constants
+// define conshbtants
 #define STATE_DN (0)
 #define STATE_UP (1)
 #define EVENT_NONE (0)
@@ -37,6 +58,8 @@ int testmap[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
 #define EVENT_LONG_PRESS (4)
 #define EVENT_VERY_LONG_PRESS (5)
 #define EVENT_SUPER_LONG_PRESS (6)
+#define EVENT_TIMEOUT1 (7)
+#define EVENT_TIMEOUT2 (8)
 // inputsm states
 #define INPUT_STATE_IDLE (0)
 #define INPUT_STATE_DOWN (1)
@@ -47,67 +70,60 @@ int testmap[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
 // app states
 #define STATE_IDLE (0)
 #define STATE_SELFTEST (1)
-#define STATE_INC (2)
-#define STATE_CLEAR (5)
 #define STATE_SLEEP (7)
+#define STATE_INACTIVITY_REDUCEBRIGHT (8)
+#define STATE_INACTIVITY_SLEEP (9)
+
 // pwm
 #define PWM_OFF (0)
 #define PWM_L1 (4)
 #define PWM_L2 (16)
 #define PWM_L3 (64)
+#define PWM_L4 (128)
+#define PWM_DEF (PWM_L3)
 #define PWM_MAX (255)
 #define PWM_MAX2 (PWM_MAX/2)
 // button timings
-#define TICK_RATE (10) // 10ms is desired tick *CLOCK SENSITIVE
-#define BLINK_MOD (10) // 10hz if 10ms
+#define TICK_RATE (10)  // 10ms is desired tick *CLOCK SENSITIVE
 #define BUTTON_WAIT_CT (20)
 #define BUTTON_DEBOUNCE_CT (2)
 #define BUTTON_LONG_CT (50)
 #define BUTTON_VERY_LONG_CT (200)
 #define BUTTON_SUPER_LONG_CT (500)
 #define CT_RATE (20)
+#define HB_CMP (199)
+#define HB_MAX (200)
+// go dimmed state after 10 minutes (60000)
+#define INACTIVITY_THRESH1_CT (60000UL)
+// go sleep after 1 hour (360000)
+#define INACTIVITY_THRESH2_CT (360000UL)
+
+//#define STEST_RATE (3)
 
 // all persistent variables here
-int ev, pwm_val, app_st, input_st, br_step, score;
-int b1_up_ct, b1_dn_ct, tick_ct, loop_count;
+int ev, pwm_val, last_pwm_val, app_st, input_st, br_step, score;
+int b1_up_ct, b1_dn_ct, tick_ct, hb_timer;
+unsigned long inactive_ctr;
 
 void disp_seg(int pos, int x)
 {
-  int dig;
-
-  dig = ( (1<<0) & x) ? 1 : 0;  digitalWrite(seg_gpio[pos][0], dig);
-  dig = ( (1<<1) & x) ? 1 : 0;  digitalWrite(seg_gpio[pos][1], dig);
-  dig = ( (1<<2) & x) ? 1 : 0;  digitalWrite(seg_gpio[pos][2], dig);
-  dig = ( (1<<3) & x) ? 1 : 0;  digitalWrite(seg_gpio[pos][3], dig);
+  for (int i=0; i<(N_SEG); i++)  
+    digitalWrite(seg_gpio[pos][i], ( ( x & (1<<i) ) ) ? 1:0 ); 
 }
 
-void reset_state()
-{
-  // initial values for persistent variables
-  ev = EVENT_NONE;
-  pwm_val = 255;
-  app_st = STATE_SELFTEST;
-  input_st = INPUT_STATE_IDLE;
-  br_step = 0;
-  score = 0;
-  b1_up_ct = 0;
-  b1_dn_ct = 0;
-  tick_ct = 0;
-  loop_count = 0; // maintains persistence across sleep
-  // setup HW
 
-  enable_io();
-  
-}
+
 
 void show_score(int the_score)
 {
-    int seg_val;
-    seg_val = int(the_score / 10);
-    disp_seg(MSB_DIG, seg_val); // set LEFT (MSB)
-    seg_val = the_score % 10;
-    disp_seg(LSB_DIG, seg_val); // set RIGHT (LSB)
+  int seg_val;
+
+  seg_val = seg_bitmap[MSB_DIG][int(the_score / 10)];
+  disp_seg(MSB_DIG, seg_val); // set LEFT (MSB)
+  seg_val = seg_bitmap[LSB_DIG][the_score % 10];
+  disp_seg(LSB_DIG, seg_val); // set RIGHT (LSB)
 }      
+
 void reset_input_state(int st)
 {
   b1_dn_ct = 0;
@@ -115,15 +131,8 @@ void reset_input_state(int st)
   input_st = st;
 }
 
-
-// the setup function runs once when you press reset or power the board
-void setup() {
-
-  pinMode(V12_EN, OUTPUT);
-  // enable switch 5v and 12v supply
-  digitalWrite(V12_EN, 0); // enable 12 volt supply
-  pinMode(LED_BUILTIN, OUTPUT);
-
+void setup() 
+{
   reset_state();
 
   // 2^n divisor, ie:
@@ -134,6 +143,9 @@ void setup() {
 //  CLKPR = 0x80;
 //  CLKPR = 0x01;  
 
+//  disp_seg(0, 127);
+//  disp_seg(1, 127);
+
 #ifdef USES_UART
   Serial.begin(115200);// 115200
   // SGTBD shorten or remove this delay (was 1sec)
@@ -142,6 +154,7 @@ void setup() {
 
   DBG_MSG("starting...");
 
+
 }
 
 
@@ -149,17 +162,16 @@ void setup() {
 void loop() {
   delay(TICK_RATE);
 
-
   input_sm();
   app_sm();
   analogWrite(PWM_MOD, pwm_val);
 
   // LED test pattern
-  digitalWrite(LED_BUILTIN, loop_count%BLINK_MOD);  // turn the LED on (HIGH is the voltage level)
-  ++loop_count;
+  digitalWrite(BOARD_LED, (hb_timer > HB_CMP) );  // turn the LED on (HIGH is the voltage level)
+  if (++hb_timer > HB_MAX) hb_timer = 0;
 
 #if 1
-  if (app_st == STATE_SLEEP)
+  if (app_st == STATE_SLEEP || app_st == STATE_INACTIVITY_SLEEP)
   {
 
     // prepare IO for sleep
@@ -187,26 +199,39 @@ void loop() {
 
 }
 
-
+// handle input events, convert input events to app states
 void app_sm()
 {
   int seg_val;
   if (app_st == STATE_SELFTEST)
   {
+#if 0
+    int L = sizeof(testmap1) / sizeof(int);
+    if (st_step < L)           // Cycle through segments
+    {
+      seg_val = testmap1[st_step % L];
+      disp_seg(MSB_DIG, seg_val);
+      seg_val = testmap2[st_step % L];
+      disp_seg(LSB_DIG, seg_val);
+      if (tick_ct % STEST_RATE == 0) st_step = st_step + 1;
+    }
+    else
+#endif     
     if (br_step < 100)   // cycle through brightness
     {
-        pwm_val = int(PWM_MAX2 + PWM_MAX2*sin( 2 * 2 * 3.1415 * br_step / 100 ));
-        disp_seg(MSB_DIG, 8);
-        disp_seg(LSB_DIG, 8);
-        br_step = br_step + 1;
+      pwm_val = int(PWM_MAX2 + PWM_MAX2*sin( 2 * 2 * 3.1415 * br_step / 100 ));
+      disp_seg(MSB_DIG, 127);
+      disp_seg(LSB_DIG, 127);
+      br_step = br_step + 1;
     }
     else
     {
       app_st = STATE_IDLE;
-      pwm_val = PWM_MAX;
+//      st_step = 0;
+      pwm_val = PWM_DEF;
     }
   }
-  else
+  else if (app_st == STATE_IDLE)
   {
     if (ev == EVENT_SINGLE_PRESS) 
     {
@@ -231,12 +256,39 @@ void app_sm()
       if (pwm_val == PWM_MAX)        pwm_val = PWM_L1;
       else if (pwm_val == PWM_L1)    pwm_val = PWM_L2;
       else if (pwm_val == PWM_L2)    pwm_val = PWM_L3;
-      else if (pwm_val == PWM_L3)    pwm_val = PWM_MAX;
+      else if (pwm_val == PWM_L3)    pwm_val = PWM_L4;
+      else if (pwm_val == PWM_L4)    pwm_val = PWM_MAX;
       DBG_MSG("change brightness");
 
     }
-    else if (ev == EVENT_SUPER_LONG_PRESS)  app_st = STATE_SLEEP;
+    else if (ev == EVENT_SUPER_LONG_PRESS)
+    {
+      app_st = STATE_SLEEP;
+    }
+    else if (ev == EVENT_TIMEOUT1)
+    {
+      app_st = STATE_INACTIVITY_REDUCEBRIGHT;
+      last_pwm_val = pwm_val;
+      pwm_val = PWM_L1;
+    }
     show_score(score);
+  }
+  else if (app_st == STATE_INACTIVITY_REDUCEBRIGHT)
+  {
+    if  (inactive_ctr < INACTIVITY_THRESH1_CT)
+    {
+      // transition back to full power operation
+      app_st = STATE_IDLE;
+      pwm_val = last_pwm_val;
+      while (digitalRead(BUT1) == STATE_DN) 
+        delay(10);
+      reset_input_state(INPUT_STATE_IDLE);
+      delay(10);
+    }
+    else if (ev == EVENT_TIMEOUT2)
+    {
+      app_st = STATE_INACTIVITY_SLEEP;
+    }
   }
   tick_ct = tick_ct + 1;
 }
@@ -249,6 +301,11 @@ void input_sm()
   if ( digitalRead(BUT1) == STATE_DN ) b1_dn_ct = b1_dn_ct + 1;
   if ( digitalRead(BUT1) == STATE_UP ) b1_up_ct = b1_up_ct + 1;
   
+  if (b1_dn_ct > 0) 
+    inactive_ctr = 0;
+  else
+    ++inactive_ctr;
+
   //sprintf(line,  "but_ct=%d, %d", b1_up_ct, b1_dn_ct);
   //DBG_MSG( line  );
   
@@ -257,6 +314,17 @@ void input_sm()
     // generate evens from buttons
     if (b1_dn_ct > 0)
       reset_input_state(INPUT_STATE_DOWN);
+
+    if (inactive_ctr >= INACTIVITY_THRESH2_CT)
+    {
+      ev = EVENT_TIMEOUT2;
+      DBG_MSG("inactivity timeout 2 exceeded");
+    }
+    else if (inactive_ctr >= INACTIVITY_THRESH1_CT)
+    {
+      ev = EVENT_TIMEOUT1;
+      DBG_MSG("inactivityp timeout 1 exceeded");
+    }
   }
   else if (input_st == INPUT_STATE_DOWN)
   {
@@ -331,54 +399,81 @@ void wakeUp()
 {
     // Just a handler for the pin interrupt.
 }
+void reset_state()
+{
+  // initial values for persistent variables
+  if (app_st == STATE_INACTIVITY_SLEEP)
+  {
+    // waking up from inactivity timeout: resume
+    app_st = STATE_IDLE;
+    pwm_val = last_pwm_val;
+  }
+  else
+  {
+    // powerup or waking up from manual shutdown: restart
+    app_st = STATE_SELFTEST;
+    score = 0;
+    //pwm_val = PWM_DEF; // will be set after selftest
+  }
+  ev = EVENT_NONE;
+  last_pwm_val = pwm_val;
+  input_st = INPUT_STATE_IDLE;
+  br_step = 0;
+  b1_up_ct = 0;
+  b1_dn_ct = 0;
+  tick_ct = 0;
+  hb_timer = 0; // maintains persistence across sleep
+  inactive_ctr = 0;
+  // setup HW
+
+  enable_io();
+  
+}
 
 void disable_io()
 {
-      // make everything high impedience
-    pinMode(LED_BUILTIN, INPUT);
-    pinMode(CABINET_LIGHT, INPUT);
-    pinMode(BUT1, INPUT_PULLUP);
-    pinMode(PWM_MOD, INPUT);
-    pinMode(seg_gpio[0][0], INPUT);
-    pinMode(seg_gpio[0][1], INPUT);
-    pinMode(seg_gpio[0][2], INPUT);
-    pinMode(seg_gpio[0][3], INPUT);
-    pinMode(seg_gpio[1][0], INPUT);
-    pinMode(seg_gpio[1][1], INPUT);
-    pinMode(seg_gpio[1][2], INPUT);
-    pinMode(seg_gpio[1][3], INPUT);
+  // make everything high impedience
+  pinMode(BOARD_LED, INPUT);
+  pinMode(BUT1, INPUT_PULLUP);
+  pinMode(PWM_MOD, INPUT);
+  for (int i=0; i<N_SEG; i++)
+  {
+    pinMode(seg_gpio[MSB_DIG][i], INPUT);
+    pinMode(seg_gpio[LSB_DIG][i], INPUT);
+  }
 
-    // shut down switched +5 and +12v supplies
-    pinMode(V12_EN, INPUT);
-
-
+  // shut down switched +5 and +12v supplies
+  pinMode(V12_EN, INPUT);
 }
 
 void enable_io()
 {
-    // initialize digital pin LED_BUILTIN as an output.
+  // initialize digital pin BOARD_LED as an output.
   pinMode(V12_EN, OUTPUT);
   // enable switch 5v and 12v supply
   digitalWrite(V12_EN, 0); // enable 12 volt supply
+  delay(200);
 
-  pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(CABINET_LIGHT, OUTPUT);
+  pinMode(BOARD_LED, OUTPUT);
   pinMode(BUT1, INPUT_PULLUP);
   pinMode(PWM_MOD, OUTPUT);
-  pinMode(seg_gpio[0][0], OUTPUT);
-  pinMode(seg_gpio[0][1], OUTPUT);
-  pinMode(seg_gpio[0][2], OUTPUT);
-  pinMode(seg_gpio[0][3], OUTPUT);
-  pinMode(seg_gpio[1][0], OUTPUT);
-  pinMode(seg_gpio[1][1], OUTPUT);
-  pinMode(seg_gpio[1][2], OUTPUT);
-  pinMode(seg_gpio[1][3], OUTPUT);
-
-  // set cabinet ligth
-  analogWrite(CABINET_LIGHT, PWM_MAX);
-
+  // set PWM frequency (clock sensitive)
+  // TCCR2B = TCCR2B & B11111000 | B00000100;    // set timer 2 divisor to    64 for PWM frequency of   490.20 Hz (The DEFAULT)
+  TCCR2B = TCCR2B & B11111000 |    B00000010;    // set timer 2 divisor to     1 for PWM frequency of 31372.55 Hz
+  for (int i=0; i<N_SEG; i++)
+  {
+      pinMode(seg_gpio[MSB_DIG][i], OUTPUT);
+      pinMode(seg_gpio[LSB_DIG][i], OUTPUT);
+  }
   // set initial states!
-  disp_seg(MSB_DIG, 8);
-  disp_seg(LSB_DIG, 8);
+  disp_seg(MSB_DIG, 127);
+  disp_seg(LSB_DIG, 127);
+
+  // wire unused inputs to high, thie sames current
+  ADCSRA = 0; 
+
+// {TBD} set unconnected pins to INPUT_PULLUP
 
 }
+
+
