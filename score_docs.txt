@@ -13,6 +13,19 @@ v  MSB/0      v  LSB/1
 |   2/4   |   |   2/4   |
 ----------    ----------
 
+
+Single press                  increment score
+Hold                          decrement score
+Hold 2s                       Zero score
+Hold 5s                       sleep
+Double click                  Cycle brightness
+Double click +Hold 2s         Cycle color scheme
+Double click +Hold 5s         88
+Double click +Hold 10s        sleep
+Inactive 15m                  decrease brightness
+Inactive 30m                  sleep
+
+
   num   seg_map
   0     1+2+4+8+16+32
   1     1+2
@@ -46,13 +59,13 @@ POWER
   0, brightness 128
 
   5v                                    
-  scenario                                        currrent(ma)
+  scenario                                        currrent(ma)       Watts
   startup deflt                                   223
-  startup deflt bright4                           53
+  startup deflt bright4                           53                0.250
   startup deflt bright16                          88
-  startup deflt bright128                         406
+  startup deflt bright128                         406               2
   startup deflt bright255                         768
-  full bright "88"                                1800
+  full bright "88"                                1800              9
   startup red                                     102
   startup red bright4                             45
   startup red bright16                            57
@@ -65,6 +78,10 @@ POWER
   CPU sleep2                                      0.2 (56.7)
   CPU sleep3                                      0.0 (56.4)
   CPU sleep4                                      0.0
+
+  Old monochrome system
+  CPU, no LED                                     13
+  "0" + ring full bright                          400         2
 
 
   14seg 23pix panel with all lights turned off    30.4
@@ -80,3 +97,4 @@ POWER
  sleep2: sleep instruction
  sleep3: ADCSRA
  sleep4: disable BOD
+
