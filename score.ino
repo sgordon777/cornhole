@@ -1,6 +1,14 @@
-
+//
 //
 //  History
+//      V2: 8/2/2024
+//        -Disable 1 & 255 brightness
+//        -Implement 2/5/10 scheme for double-hold
+//        -use keypres when in inactivity timeout (dim)
+//        -when wakeup from inactivity sleep, retain original brightness
+//
+//
+//
 //
 
 #include <FastLED.h>
@@ -20,7 +28,7 @@ char buf[256];
 #define ENABLE_PIN (3)
 // params
 #define BRIGHT_START (64)
-#define SW_VERSION (1)
+#define SW_VERSION (2)
 #define ST_DEL (100)
 #define ST_TERM (200)
 
@@ -63,9 +71,10 @@ char buf[256];
 #define TICK_RATE (10)  // 10ms is desired tick *CLOCK SENSITIVE
 #define BUTTON_WAIT_CT (20)
 #define BUTTON_DEBOUNCE_CT (2)
-#define BUTTON_LONG_CT (50)
-#define BUTTON_VERY_LONG_CT (200)
-#define BUTTON_SUPER_LONG_CT (500)
+#define BUTTON_HALFSEC_HOLD_CT (50)
+#define BUTTON_TWOSEC_HOLD_CT (200)
+#define BUTTON_FIVESEC_HOLD_CT (500)
+#define BUTTON_TENSEC_HOLD_CT (1000)
 #define CT_RATE (20)
 #define HB_CMP (199)
 #define HB_MAX (200)
@@ -90,7 +99,7 @@ char buf[256];
 // all persistent variables here
 int ev, app_st, input_st, score, scheme, color_mode;
 int b1_up_ct, b1_dn_ct, tick_ct, hb_timer;
-int bright = BRIGHT_START;
+int bright, bright_prev;
 unsigned long inactive_ctr;
 CRGBPalette16 currentPalette = RainbowColors_p;
 
@@ -174,7 +183,6 @@ void reset_input_state(int st) {
 void setup() {
 
   FastLED.addLeds<WS2812, LED_PIN, GRB>(pixels, (PIX_PER_DIG * 2)).setCorrection(TypicalLEDStrip);
-  FastLED.setBrightness(bright);
 
 
 #ifdef USES_UART
@@ -254,18 +262,16 @@ void app_sm() {
     } else if (ev == EVENT_DOUBLE_PRESS) {
       // TBD cycle through brightness
       DBG_MSG("change brightness");
-      if (bright == 1)
-        bright = 4;
-      else if (bright == 4)
+      if (bright == 4)
         bright = 16;
       else if (bright == 16)
         bright = 64;
       else if (bright == 64)
         bright = 128;
       else if (bright == 128)
-        bright = 255;
-      else if (bright == 255)
-        bright = 1;
+        bright = 4;
+      //else if (bright == 255)
+      //  bright = 1;
       FastLED.setBrightness(bright);
     } else if (ev == EVENT_DOUBLE_LONG_PRESS) {
       // change color scheme
@@ -285,18 +291,24 @@ void app_sm() {
       delay(100);
     } else if (ev == EVENT_TIMEOUT1) {
       app_st = STATE_INACTIVITY_REDUCEBRIGHT;
+      bright_prev = bright;
+      bright = 16;
+      FastLED.setBrightness(bright);
       // TBD reduce brightness to inactivity value
     }
     show_score(score);
   } else if (app_st == STATE_INACTIVITY_REDUCEBRIGHT) {
     if (inactive_ctr < INACTIVITY_THRESH1_CT) {
       // transition back to full power operation
+      bright = bright_prev;
+      FastLED.setBrightness(bright);
       app_st = STATE_IDLE;
-      while (digitalRead(BUT_PIN) == STATE_DN)
-        delay(10);
+//      while (digitalRead(BUT_PIN) == STATE_DN)
+//        delay(10);
       reset_input_state(INPUT_STATE_IDLE);
       delay(10);
     } else if (ev == EVENT_TIMEOUT2) {
+      bright = bright_prev;
       app_st = STATE_INACTIVITY_SLEEP;
     }
   }
@@ -334,7 +346,7 @@ void input_sm() {
     // button is in unstable "down", look for long presses or wait for stable
     // and transition to "up" state
     // check for long press
-    if (b1_dn_ct >= BUTTON_LONG_CT) {
+    if (b1_dn_ct >= BUTTON_HALFSEC_HOLD_CT) {
       ev = EVENT_LONG_PRESS;
       input_st = INPUT_STATE_HOLD;
       DBG_MSG("long press detected");
@@ -366,22 +378,22 @@ void input_sm() {
       ev = EVENT_DOUBLE_PRESS;
       reset_input_state(INPUT_STATE_IDLE);
       DBG_MSG("double press detected");
-    } else if (b1_dn_ct >= BUTTON_LONG_CT) {
+    } else if (b1_dn_ct >= BUTTON_TWOSEC_HOLD_CT) {
       // down button continues to be held instead of released, move to "double_xxx_press"
       reset_input_state(INPUT_STATE_DOUBLE_LONGPRESS);
     }
   } else if (input_st == INPUT_STATE_DOUBLE_LONGPRESS) {
-    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_LONG_CT) {
+    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_TWOSEC_HOLD_CT) {
       ev = EVENT_DOUBLE_LONG_PRESS;
       reset_input_state(INPUT_STATE_IDLE);
       DBG_MSG("double+long press detected");
     }
-    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_VERY_LONG_CT) {
+    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_FIVESEC_HOLD_CT) {
       ev = EVENT_DOUBLE_VERY_LONG_PRESS;
       reset_input_state(INPUT_STATE_IDLE);
       DBG_MSG("double+very long press detected");
     }
-    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_SUPER_LONG_CT) {
+    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_TENSEC_HOLD_CT) {
       ev = EVENT_DOUBLE_SUPER_LONG_PRESS;
       reset_input_state(INPUT_STATE_IDLE);
       DBG_MSG("double+super long press detected");
@@ -391,16 +403,16 @@ void input_sm() {
     if (b1_up_ct >= BUTTON_DEBOUNCE_CT)
       reset_input_state(INPUT_STATE_IDLE);
     // check for super long hold
-    else if (b1_dn_ct >= BUTTON_SUPER_LONG_CT) {
+    else if (b1_dn_ct >= BUTTON_FIVESEC_HOLD_CT) {
       DBG_MSG("super long press detectedd");
       reset_input_state(INPUT_STATE_IDLE);
       ev = EVENT_SUPER_LONG_PRESS;
     }
     // check for very long hold
-    else if (b1_dn_ct >= BUTTON_VERY_LONG_CT) {
+    else if (b1_dn_ct >= BUTTON_TWOSEC_HOLD_CT) {
       DBG_MSG("very long press detectedd");
       ev = EVENT_VERY_LONG_PRESS;
-    } else if (b1_dn_ct >= BUTTON_LONG_CT)  // check for super long hold
+    } else if (b1_dn_ct >= BUTTON_HALFSEC_HOLD_CT)  // check for super long hold
     {
       DBG_MSG("long press detected");
       ev = EVENT_LONG_PRESS;
@@ -420,6 +432,8 @@ void reset_state() {
     score = 0;
     scheme = 0;
     color_mode = 0;
+    bright = BRIGHT_START;
+    bright_prev = bright;
   }
   ev = EVENT_NONE;
   input_st = INPUT_STATE_IDLE;
@@ -431,6 +445,8 @@ void reset_state() {
   // setup HW
 
   enable_io();
+  FastLED.setBrightness(bright);
+
 }
 
 void disable_io() {

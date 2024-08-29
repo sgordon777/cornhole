@@ -60,7 +60,7 @@ POWER
 
   5v                                    
   scenario                                        currrent(ma)       Watts
-  startup deflt                                   223
+  startup deflt                                   223				1
   startup deflt bright4                           53                0.250
   startup deflt bright16                          88
   startup deflt bright128                         406               2
