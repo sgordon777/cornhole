@@ -11,7 +11,12 @@
 //        -when wakeup from inactivity sleep, retain original brightness
 //      V3: 8/4/2024 
 //        -Suport for ESP32
-//
+//      v4: 8/24/2024
+//        -bitmaps
+//        -lights for esp32
+//      V5: ??
+//        -Read bus voltage
+//        -Refuse to start if bus voltage < 3.0
 //
 
 #include <FastLED.h>
@@ -30,21 +35,24 @@ char buf[256];
 #define ALLOW_MAXBRIGHT
 #if defined(ATMEL)
 #define BUT_PIN (2)
+#define LED_PIN (43)  // On Trinket or Gemma, suggest changing this to 1
+#define HB_PIN (5)
+#define ENABLE_PIN (3)
 #elif defined(ESP32)
-#define BUT_PIN (0)
+#define BUT_PIN (16)
+#define LED_PIN (18)  // On Trinket or Gemma, suggest changing this to 1
+#define HB_PIN (15)
+#define ENABLE_PIN (33)
 #else #error unsupported platform
 #endif
-#define LED_PIN (11)  // On Trinket or Gemma, suggest changing this to 1
-#define ENABLE_PIN (3)
 // params
 #define BRIGHT_START (64)
-#define SW_VERSION (3)
+#define SW_VERSION (4)
 #define ST_DEL (100)
 #define ST_TERM (200)
 
 // config
 #define N_DIG (2)
-#define N_SEG (7)
 #define MSB_DIG (0)
 #define LSB_DIG (1)
 #define PIX_PER_SEG (3)
@@ -94,7 +102,7 @@ char buf[256];
 #define COLOR_SCHEME_MILLER (3)
 #define COLOR_SCHEME_REDWINGS (4)
 #define COLOR_SCHEME_COUNT (5)
-#define COLOR_MODE_SCHEME (0)
+#define COLOR_MODE_PALLETE (0)
 #define COLOR_MODE_PALLETE_ROT (1)
 
 // go dimmed state after 10 minutes (60000)
@@ -131,56 +139,38 @@ CRGB msb_color[COLOR_SCHEME_COUNT] = { CRGB(255,255,255), CHSV(20, 255, 255),  C
 CRGB lsb_color[COLOR_SCHEME_COUNT] = { CRGB(255,255,255), CHSV(171, 255, 255), CHSV(95, 209.92, 77),  CHSV(160, 255, 76),  CHSV(250, 255, 236) }; 
 
 
-const int seg_pix[N_DIG][N_SEG] = {
-  { 0 + PIX_PER_DIG, 4 + PIX_PER_DIG, 7 + PIX_PER_DIG, 10 + PIX_PER_DIG, 13 + PIX_PER_DIG, 17 + PIX_PER_DIG, 20 + PIX_PER_DIG },
-  { 0, 4, 7, 10, 13, 17, 20 },
-};
-const int seg_pix_len[N_DIG][N_SEG] = {
-  { 4, 3, 3, 3, 4, 3, 3 },
-  { 4, 3, 3, 3, 4, 3, 3 },
+// segment bitmaps
+const uint32_t seg_bitmap[2][10] = { 
+//         0         1         2         3         4         5         6         7         8         9  
+  { 0x000000, 0x00007F, 0x7fe3F8, 0x7fff80, 0x71fC0f, 0x7e3f8f, 0x7e3fff, 0x0ffC00, 0x7fffff, 0x7ffC0f}, // MSB
+  { 0x0fffff, 0x01fC00, 0x7fe3F8, 0x7fff80, 0x71fC0f, 0x7e3f8f, 0x7e3fff, 0x0ffC00, 0x7fffff, 0x7ffC0f}  // LSB
 };
 
-// segment bitmap for each digit
-const int seg_bitmap[2][10] = {  // MSB,LSB
-  { 0, 1 + 2, 32 + 16 + 64 + 2 + 4, 32 + 16 + 64 + 8 + 4, 1 + 64 + 16 + 8, 32 + 1 + 64 + 8 + 4, 32 + 1 + 2 + 4 + 8 + 64, 32 + 16 + 8, 1 + 2 + 4 + 8 + 16 + 32 + 64, 1 + 32 + 16 + 64 + 8 },
-  { 1 + 2 + 4 + 8 + 16 + 32, 8 + 16, 32 + 16 + 64 + 2 + 4, 32 + 16 + 64 + 8 + 4, 1 + 64 + 16 + 8, 32 + 1 + 64 + 8 + 4, 32 + 1 + 2 + 4 + 8 + 64, 32 + 16 + 8, 1 + 2 + 4 + 8 + 16 + 32 + 64, 1 + 32 + 16 + 64 + 8 }
-};
-
-void disp_seg(int pos, int x) {
+void disp_seg(int pos, uint32_t pix_bitmap) {
   static int ctr=0;
+  int offs = (pos == MSB_DIG) ? PIX_PER_DIG:0;
+  CRGB cur_color;
 
-  for (int i = 0; i < (N_SEG); i++) {
-    int pixel_num;
-    int pixel_len;
-    CRGB pixel_val;
-    CRGB cur_color_msb, cur_color_lsb;
-
-    if (color_mode == 0) {
-      cur_color_msb = msb_color[scheme];
-      cur_color_lsb = lsb_color[scheme];
-    }
-    else {
-      cur_color_msb = ColorFromPalette( currentPalette, i+ctr, 255, LINEARBLEND);
-      cur_color_lsb = ColorFromPalette( currentPalette, i+ctr+23, 255, LINEARBLEND);
-    }
-
-
-    if (pos == 0)
-      pixel_val = ((x & (1 << i))) ? cur_color_msb : 0;
+  if (color_mode == COLOR_MODE_PALLETE) 
+  {
+    if (pos == MSB_DIG)
+      cur_color = msb_color[scheme];
     else
-      pixel_val = ((x & (1 << i))) ? cur_color_lsb : 0;
-    pixel_num = seg_pix[pos][i];
-    pixel_len = seg_pix_len[pos][i];
+      cur_color = lsb_color[scheme];
+  }
 
-    for (int j = 0; j < pixel_len; ++j)
-      pixels[pixel_num + j] = pixel_val;
+  for (int i = 0; i < PIX_PER_DIG; i++) 
+  {
+    if (color_mode == COLOR_MODE_PALLETE_ROT) 
+      cur_color = ColorFromPalette( currentPalette, i+ctr+23, 255, LINEARBLEND);
+    pixels[i+offs] = ((pix_bitmap & (1 << i))) ? cur_color : 0;
   }
   ++ctr;
 
 }
 
 void show_score(int the_score) {
-  int seg_val;
+  uint32_t seg_val;
 
   //sprintf(buf,  "SHOW_SCORE MSB: score=%d", the_score);
   //DBG_MSG( buf  );
@@ -239,6 +229,12 @@ void wake_int() {
 
 void loop() {
 
+
+  // LED test pattern
+  digitalWrite(HB_PIN, (hb_timer > HB_CMP) );  // turn the LED on (HIGH is the voltage level)
+  if (++hb_timer > HB_MAX) hb_timer = 0;
+
+
   delay(TICK_RATE);
 
   input_sm();
@@ -247,7 +243,7 @@ void loop() {
   if (score == 21 || score == 88)
     color_mode = COLOR_MODE_PALLETE_ROT;
   else
-    color_mode = COLOR_MODE_SCHEME;    
+    color_mode = COLOR_MODE_PALLETE;    
 
 
   if (app_st == STATE_SLEEP || app_st == STATE_INACTIVITY_SLEEP) {
@@ -508,6 +504,7 @@ void disable_io() {
   DDRD = 0x00;
   PORTD = 0x00;
 #endif // ATMEL
+  pinMode(HB_PIN, INPUT);
   pinMode(BUT_PIN, INPUT_PULLUP);
 }
 
@@ -515,6 +512,7 @@ void enable_io() {
   pinMode(LED_PIN, OUTPUT);
   pinMode(ENABLE_PIN, OUTPUT);
   pinMode(BUT_PIN, INPUT_PULLUP);
+  pinMode(HB_PIN, OUTPUT);
   delay(250);
   // wire unused inputs to high, thie sames current
   //ADCSRA = 0; SSSSSSSSSS
@@ -567,7 +565,7 @@ void corn_sleep() {
   // Disable external pin interrupt on wake up pin.
   detachInterrupt(0);
 #elif defined(ESP32)
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)0, LOW);  // Configure external
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)BUT_PIN, LOW);  // Configure external
   delay(1000);
   esp_deep_sleep_start();
 #endif // ATMEL
