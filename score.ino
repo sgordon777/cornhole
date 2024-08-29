@@ -1,13 +1,16 @@
 //
 //
+// Cornhole, Neo-pixel
+//
+//
 //  History
-//      V2: 8/2/2024
+//      V2: 8/3/2024
 //        -Disable 1 & 255 brightness
 //        -Implement 2/5/10 scheme for double-hold
 //        -use keypres when in inactivity timeout (dim)
 //        -when wakeup from inactivity sleep, retain original brightness
-//
-//
+//      V3: 8/4/2024 
+//        -Suport for ESP32
 //
 //
 
@@ -22,13 +25,20 @@ char buf[256];
 #define DBG_MSG(x)
 #endif
 
-// Which pin on the Arduino is connected to the NeoPixels?
+//#define ATMEL
+#define ESP32
+#define ALLOW_MAXBRIGHT
+#if defined(ATMEL)
 #define BUT_PIN (2)
+#elif defined(ESP32)
+#define BUT_PIN (0)
+#else #error unsupported platform
+#endif
 #define LED_PIN (11)  // On Trinket or Gemma, suggest changing this to 1
 #define ENABLE_PIN (3)
 // params
 #define BRIGHT_START (64)
-#define SW_VERSION (2)
+#define SW_VERSION (3)
 #define ST_DEL (100)
 #define ST_TERM (200)
 
@@ -94,14 +104,24 @@ char buf[256];
 //#define INACTIVITY_THRESH2_CT (2000UL)
 #define INACTIVITY_THRESH2_CT (360000UL)
 
+
 //#define STEST_RATE (3)
+#ifdef ATMEL
+#define RTC_DATA_ATTR
+#endif
 
 // all persistent variables here
-int ev, app_st, input_st, score, scheme, color_mode;
-int b1_up_ct, b1_dn_ct, tick_ct, hb_timer;
-int bright, bright_prev;
+RTC_DATA_ATTR int ev, app_st, input_st, score, scheme, color_mode;
+RTC_DATA_ATTR int b1_up_ct, b1_dn_ct, tick_ct, hb_timer;
+RTC_DATA_ATTR int bright, bright_prev;
 unsigned long inactive_ctr;
 CRGBPalette16 currentPalette = RainbowColors_p;
+
+#ifdef ESP32
+RTC_DATA_ATTR int bootCount = 0;
+#endif
+
+
 
 //Adafruit_NeoPixel pixels(2*PIX_PER_DIG, PIX_IO, NEO_GRB + NEO_KHZ800);
 CRGB pixels[2 * PIX_PER_DIG];
@@ -182,14 +202,26 @@ void reset_input_state(int st) {
 
 void setup() {
 
-  FastLED.addLeds<WS2812, LED_PIN, GRB>(pixels, (PIX_PER_DIG * 2)).setCorrection(TypicalLEDStrip);
-
 
 #ifdef USES_UART
-  Serial.begin(115200);  // 115200
+#if defined(ATMEL)
+  Serial.begin(115200);
+#elif defined(ESP32)
+  Serial.begin(921600);
+#endif // ATMEL
   // SGTBD shorten or remove this delay (was 1sec)
   delay(100);  //Take some time to open up the Serial Monitor
+#endif // USES_UART
+
+#if defined(ESP32)
+  //Increment boot number and print it every reboot
+  ++bootCount;
+  Serial.println("Boot number: " + String(bootCount));
+  //Print the wakeup reason for ESP32
+  print_wakeup_reason();
 #endif
+
+  FastLED.addLeds<WS2812, LED_PIN, GRB>(pixels, (PIX_PER_DIG * 2)).setCorrection(TypicalLEDStrip);
 
   // These lines are specifically to support the Adafruit Trinket 5V 16 MHz.
   // Any other board, you can remove this part (but no harm leaving it):
@@ -268,10 +300,15 @@ void app_sm() {
         bright = 64;
       else if (bright == 64)
         bright = 128;
+#ifndef ALLOW_MAXBRIGHT
       else if (bright == 128)
         bright = 4;
-      //else if (bright == 255)
-      //  bright = 1;
+#else // ALLOW_MAXBRIGHT
+      else if (bright == 128)
+        bright = 255;
+      else if (bright == 255)
+        bright = 4;
+#endif        
       FastLED.setBrightness(bright);
     } else if (ev == EVENT_DOUBLE_LONG_PRESS) {
       // change color scheme
@@ -422,8 +459,19 @@ void input_sm() {
 
 
 void reset_state() {
+
+int sleep_woke;
+
+#if defined(ATMEL)
+  if (app_st == STATE_INACTIVITY_SLEEP || app_st == STATE_SLEEP) sleep_woke = 1; else sleep_woke = 0;    
+#elif defined(ESP32)
+  esp_sleep_wakeup_cause_t wakeup_reason;
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) sleep_woke = 1; else sleep_woke = 0;
+#endif // ATMEL
+
   // initial values for persistent variables
-  if (app_st == STATE_INACTIVITY_SLEEP || app_st == STATE_SLEEP) {
+  if (sleep_woke) {
     // waking up from inactivity timeout or sleep: resume
     app_st = STATE_IDLE;
   } else {
@@ -451,6 +499,7 @@ void reset_state() {
 
 void disable_io() {
 
+#if defined(ATMEL)
   // make everything high impedience
   DDRB = 0x00;
   PORTB = 0x00;
@@ -458,6 +507,7 @@ void disable_io() {
   PORTC = 0x00;
   DDRD = 0x00;
   PORTD = 0x00;
+#endif // ATMEL
   pinMode(BUT_PIN, INPUT_PULLUP);
 }
 
@@ -491,6 +541,7 @@ void corn_sleep() {
   DBG_MSG("Sleep: go to sleep now");
   // Allow wake up pin to trigger interrupt on low.
 
+#if defined(ATMEL)
   //attachInterrupt(), wake_int, FALLING);
   attachInterrupt(digitalPinToInterrupt(BUT_PIN), wake_int, FALLING);
 
@@ -515,6 +566,11 @@ void corn_sleep() {
   }
   // Disable external pin interrupt on wake up pin.
   detachInterrupt(0);
+#elif defined(ESP32)
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)0, LOW);  // Configure external
+  delay(1000);
+  esp_deep_sleep_start();
+#endif // ATMEL
 
   delay(200);
   DBG_MSG("Sleep: Wake");
@@ -524,4 +580,18 @@ void corn_sleep() {
   //    // reset everythibg
   reset_state();
 }
+void print_wakeup_reason(){
+  esp_sleep_wakeup_cause_t wakeup_reason;
 
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
+    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+  }
+}
