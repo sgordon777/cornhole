@@ -1,15 +1,15 @@
 #include "LowPower.h"
 
 #include "math.h"
-// SCORE_NODEC v1.0
+// SCORE_NODEC v3.0
 // Chip: ATMEGA328P
 //   Oscillator=8Mhz internal
 //   Bootloader=none
 //   Brownout=none 
 // History
 //   12/11/2022: v1.0 declared
-//
-// 
+//   12/27/2022: re-arranged PIO map to simplify wiring, v2.0 declared, production intent
+//   12/28/2022: re-arranged PIO map to simplify wiring, v3.0 declared, production intent
 //
 //
 
@@ -36,9 +36,9 @@
 #define LSB_DIG (1)
 // GPIO for each segment
 const int seg_gpio[N_DIG][N_SEG] = 
-{ 
-  {8, 7, 6, 9, 10, 11, 12}, 
-  {13, 14, 15, 16, 17, 18, 19} 
+{ // GPIOs for segment a, b, c, d, e, f, g (see map below)
+  {12, 8,  7,  6,  9,  10, 11}, 
+  {19, 13, 14, 15, 16, 17, 18} 
 }; 
 
 // segment bitmap for each digit
@@ -475,5 +475,3 @@ void enable_io()
 // {TBD} set unconnected pins to INPUT_PULLUP
 
 }
-
-
