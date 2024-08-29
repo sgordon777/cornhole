@@ -1,7 +1,7 @@
 #include "LowPower.h"
 
 #include "math.h"
-// SCORE_NODEC v3.0
+#define SCORE_NODEC_VER (4)
 // Chip: ATMEGA328P
 //   Oscillator=8Mhz internal
 //   Bootloader=none
@@ -10,7 +10,7 @@
 //   12/11/2022: v1.0 declared
 //   12/27/2022: re-arranged PIO map to simplify wiring, v2.0 declared, production intent
 //   12/28/2022: re-arranged PIO map to simplify wiring, v3.0 declared, production intent
-//
+//   12/30/2022: remember last brightness upon shutdown, set low brightness setting to 1, v4.0 declared, production intent, show version on powerup
 //
 
 
@@ -76,7 +76,7 @@ int seg_bitmap[2][10] =
 
 // pwm
 #define PWM_OFF (0)
-#define PWM_L1 (4)
+#define PWM_L1 (1)
 #define PWM_L2 (16)
 #define PWM_L3 (64)
 #define PWM_L4 (128)
@@ -94,8 +94,10 @@ int seg_bitmap[2][10] =
 #define HB_CMP (199)
 #define HB_MAX (200)
 // go dimmed state after 10 minutes (60000)
+//#define INACTIVITY_THRESH1_CT (1000UL)
 #define INACTIVITY_THRESH1_CT (60000UL)
 // go sleep after 1 hour (360000)
+//#define INACTIVITY_THRESH2_CT (2000UL)
 #define INACTIVITY_THRESH2_CT (360000UL)
 
 //#define STEST_RATE (3)
@@ -224,11 +226,19 @@ void app_sm()
       disp_seg(LSB_DIG, 127);
       br_step = br_step + 1;
     }
+    else if (br_step < 200)
+    {
+      seg_val = seg_bitmap[MSB_DIG][0];
+      disp_seg(MSB_DIG, seg_val);
+      seg_val = seg_bitmap[LSB_DIG][SCORE_NODEC_VER];
+      disp_seg(LSB_DIG, seg_val);
+      br_step = br_step + 1;
+    }
     else
     {
       app_st = STATE_IDLE;
 //      st_step = 0;
-      pwm_val = PWM_DEF;
+      pwm_val = last_pwm_val;
     }
   }
   else if (app_st == STATE_IDLE)
@@ -264,6 +274,7 @@ void app_sm()
     else if (ev == EVENT_SUPER_LONG_PRESS)
     {
       app_st = STATE_SLEEP;
+      last_pwm_val = pwm_val;
     }
     else if (ev == EVENT_TIMEOUT1)
     {
@@ -402,7 +413,7 @@ void wakeUp()
 void reset_state()
 {
   // initial values for persistent variables
-  if (app_st == STATE_INACTIVITY_SLEEP)
+  if (app_st == STATE_INACTIVITY_SLEEP || app_st == STATE_SLEEP)
   {
     // waking up from inactivity timeout: resume
     app_st = STATE_IDLE;
@@ -410,13 +421,13 @@ void reset_state()
   }
   else
   {
+    last_pwm_val = PWM_DEF;
     // powerup or waking up from manual shutdown: restart
     app_st = STATE_SELFTEST;
     score = 0;
     //pwm_val = PWM_DEF; // will be set after selftest
   }
   ev = EVENT_NONE;
-  last_pwm_val = pwm_val;
   input_st = INPUT_STATE_IDLE;
   br_step = 0;
   b1_up_ct = 0;
@@ -475,3 +486,4 @@ void enable_io()
 // {TBD} set unconnected pins to INPUT_PULLUP
 
 }
+
