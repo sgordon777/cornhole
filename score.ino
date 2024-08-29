@@ -1,7 +1,7 @@
 #include "LowPower.h"
 
 #include "math.h"
-#define SCORE_NODEC_VER (4)
+#define SCORE_NODEC_VER (5)
 // Chip: ATMEGA328P
 //   Oscillator=8Mhz internal
 //   Bootloader=none
@@ -11,7 +11,7 @@
 //   12/27/2022: re-arranged PIO map to simplify wiring, v2.0 declared, production intent
 //   12/28/2022: re-arranged PIO map to simplify wiring, v3.0 declared, production intent
 //   12/30/2022: remember last brightness upon shutdown, set low brightness setting to 1, v4.0 declared, production intent, show version on powerup
-//
+//   1/11/2022: turn off LEDs at startup, faster LED pattern for selftest  v5
 
 
 
@@ -42,7 +42,7 @@ const int seg_gpio[N_DIG][N_SEG] =
 }; 
 
 // segment bitmap for each digit
-int seg_bitmap[2][10] = 
+const int seg_bitmap[2][10] = 
 { 
   {0, 6,   91, 121, 116, 109, 111, 56, 127, 125}, 
   {63, 48, 91, 121, 116, 109, 111, 56, 127, 125} 
@@ -110,7 +110,7 @@ unsigned long inactive_ctr;
 void disp_seg(int pos, int x)
 {
   for (int i=0; i<(N_SEG); i++)  
-    digitalWrite(seg_gpio[pos][i], ( ( x & (1<<i) ) ) ? 1:0 ); 
+    digitalWrite(seg_gpio[pos][i], ( ( x & (1<<i) ) ) ? HIGH:LOW ); 
 }
 
 
@@ -135,6 +135,8 @@ void reset_input_state(int st)
 
 void setup() 
 {
+
+  app_st = STATE_IDLE;
   reset_state();
 
   // 2^n divisor, ie:
@@ -144,9 +146,6 @@ void setup()
   // 5 = factor of 32, 500khz (500ms to 16s)
 //  CLKPR = 0x80;
 //  CLKPR = 0x01;  
-
-//  disp_seg(0, 127);
-//  disp_seg(1, 127);
 
 #ifdef USES_UART
   Serial.begin(115200);// 115200
@@ -169,12 +168,20 @@ void loop() {
   analogWrite(PWM_MOD, pwm_val);
 
   // LED test pattern
-  digitalWrite(BOARD_LED, (hb_timer > HB_CMP) );  // turn the LED on (HIGH is the voltage level)
+  if (app_st != STATE_SELFTEST)
+  {
+    digitalWrite(BOARD_LED,  (hb_timer > HB_CMP) ? HIGH:LOW );  // turn the LED on for a small period of time
+  }
+  else
+  {
+    digitalWrite(BOARD_LED,  ( (hb_timer / 8) % 2 ) ? HIGH:LOW );  // blink the LED at ~10 Hz
+  }
   if (++hb_timer > HB_MAX) hb_timer = 0;
 
 #if 1
   if (app_st == STATE_SLEEP || app_st == STATE_INACTIVITY_SLEEP)
   {
+    int spurious_wakeup = 1;
 
     // prepare IO for sleep
     disable_io();     
@@ -186,10 +193,17 @@ void loop() {
     // Allow wake up pin to trigger interrupt on low.
     attachInterrupt(0, wakeUp, LOW);
       
-    // Enter power down state with ADC and BOD module disabled.
-    // Wake up when wake up pin is low.
-    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF); 
-      
+    while (spurious_wakeup == 1)  
+    {
+        // Enter power down state with ADC and BOD module disabled.
+        // Wake up when wake up pin is low.
+        LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF); 
+
+        if ( digitalRead(BUT1) == STATE_DN )
+          spurious_wakeup = 0; // button should be down for true wake-up request
+    }
+
+
     // Disable external pin interrupt on wake up pin.
     detachInterrupt(0); 
 
@@ -218,7 +232,7 @@ void app_sm()
       if (tick_ct % STEST_RATE == 0) st_step = st_step + 1;
     }
     else
-#endif     
+#endif
     if (br_step < 100)   // cycle through brightness
     {
       pwm_val = int(PWM_MAX2 + PWM_MAX2*sin( 2 * 2 * 3.1415 * br_step / 100 ));
@@ -406,6 +420,7 @@ void input_sm()
 }
 
 
+
 void wakeUp()
 {
     // Just a handler for the pin interrupt.
@@ -459,26 +474,27 @@ void disable_io()
 
 void enable_io()
 {
+  // set initial states to off to avoid initial surge
+  disp_seg(MSB_DIG, 0);
+  disp_seg(LSB_DIG, 0);
+
   // initialize digital pin BOARD_LED as an output.
   pinMode(V12_EN, OUTPUT);
   // enable switch 5v and 12v supply
-  digitalWrite(V12_EN, 0); // enable 12 volt supply
+  digitalWrite(V12_EN, LOW); // enable 12 volt supply
   delay(200);
 
   pinMode(BOARD_LED, OUTPUT);
   pinMode(BUT1, INPUT_PULLUP);
   pinMode(PWM_MOD, OUTPUT);
   // set PWM frequency (clock sensitive)
-  // TCCR2B = TCCR2B & B11111000 | B00000100;    // set timer 2 divisor to    64 for PWM frequency of   490.20 Hz (The DEFAULT)
-  TCCR2B = TCCR2B & B11111000 |    B00000010;    // set timer 2 divisor to     1 for PWM frequency of 31372.55 Hz
+  // PRE: 1=1, 2=8, 3=32, 4=64, 5=128, 6=256, 7=1024
+  TCCR2B = TCCR2B & B11111000 |    B00000011;    // set timer 2 divisor to     1 for PWM frequency of 31372.55 Hz
   for (int i=0; i<N_SEG; i++)
   {
       pinMode(seg_gpio[MSB_DIG][i], OUTPUT);
       pinMode(seg_gpio[LSB_DIG][i], OUTPUT);
   }
-  // set initial states!
-  disp_seg(MSB_DIG, 127);
-  disp_seg(LSB_DIG, 127);
 
   // wire unused inputs to high, thie sames current
   ADCSRA = 0; 
