@@ -1,19 +1,8 @@
-#include "LowPower.h"
+// NeoPixel Ring simple sketch (c) 2013 Shae Erisson
+// Released under the GPLv3 license to match the rest of the
+// Adafruit NeoPixel library
 
-#include "math.h"
-#define SCORE_NODEC_VER (6)
-// Chip: ATMEGA328P
-//   Oscillator=8Mhz internal
-//   Bootloader=none
-//   Brownout=none 
-// History
-//   12/11/2022: v1.0 declared
-//   12/27/2022: re-arranged PIO map to simplify wiring, v2.0 declared, production intent
-//   12/28/2022: re-arranged PIO map to simplify wiring, v3.0 declared, production intent
-//   12/30/2022: remember last brightness upon shutdown, set low brightness setting to 1, v4.0 declared, production intent, show version on powerup
-//   1/11/2022: turn off LEDs at startup, faster LED pattern for selftest  v5
-
-
+#include <FastLED.h>
 
 #define USES_UART
 
@@ -24,31 +13,23 @@
   #define DBG_MSG(x)
 #endif
 
-// define IO pin functions
-#define BOARD_LED (5)
-#define V12_EN (4)
-#define BUT1 (2)
-#define PWM_MOD (3)
+// Which pin on the Arduino is connected to the NeoPixels?
+#define BUT_PIN (2)
+#define LED_PIN   (11) // On Trinket or Gemma, suggest changing this to 1
+#define ENABLE_PIN (3)
+// params
+#define BRIGHT_START (64)
+#define SW_VERSION (1)
+#define ST_DEL (33)
+#define ST_TERM (48)
 
+// config
 #define N_DIG (2)
 #define N_SEG (7)
 #define MSB_DIG (0)
 #define LSB_DIG (1)
-// GPIO for each segment
-const int seg_gpio[N_DIG][N_SEG] = 
-{ // GPIOs for segment a, b, c, d, e, f, g (see map below)
-  {12, 8,  7,  6,  9,  10, 11}, 
-  {19, 13, 14, 15, 16, 17, 18} 
-}; 
-
-// segment bitmap for each digit
-const int seg_bitmap[2][10] = 
-{ 
-  {0, 6,   91, 121, 116, 109, 111, 56, 127, 125}, 
-  {63, 48, 91, 121, 116, 109, 111, 56, 127, 125} 
-};
-
-// define conshbtants
+#define PIX_PER_SEG (3)
+#define PIX_PER_DIG (23)
 #define STATE_DN (0)
 #define STATE_UP (1)
 #define EVENT_NONE (0)
@@ -60,6 +41,9 @@ const int seg_bitmap[2][10] =
 #define EVENT_SUPER_LONG_PRESS (6)
 #define EVENT_TIMEOUT1 (7)
 #define EVENT_TIMEOUT2 (8)
+#define EVENT_DOUBLE_LONG_PRESS (9)
+#define EVENT_DOUBLE_VERY_LONG_PRESS (10)
+#define EVENT_DOUBLE_SUPER_LONG_PRESS (11)
 // inputsm states
 #define INPUT_STATE_IDLE (0)
 #define INPUT_STATE_DOWN (1)
@@ -67,22 +51,13 @@ const int seg_bitmap[2][10] =
 #define INPUT_STATE_HOLD (3)
 #define INPUT_STATE_LONG_HOLD (4)
 #define INPUT_STATE_DOUBLEPRESS (5)
+#define INPUT_STATE_DOUBLE_LONGPRESS (6)
 // app states
 #define STATE_IDLE (0)
 #define STATE_SELFTEST (1)
 #define STATE_SLEEP (7)
 #define STATE_INACTIVITY_REDUCEBRIGHT (8)
 #define STATE_INACTIVITY_SLEEP (9)
-
-// pwm
-#define PWM_OFF (0)
-#define PWM_L1 (1)
-#define PWM_L2 (16)
-#define PWM_L3 (64)
-#define PWM_L4 (128)
-#define PWM_DEF (PWM_L3)
-#define PWM_MAX (255)
-#define PWM_MAX2 (PWM_MAX/2)
 // button timings
 #define TICK_RATE (10)  // 10ms is desired tick *CLOCK SENSITIVE
 #define BUTTON_WAIT_CT (20)
@@ -103,27 +78,71 @@ const int seg_bitmap[2][10] =
 //#define STEST_RATE (3)
 
 // all persistent variables here
-int ev, pwm_val, last_pwm_val, app_st, input_st, br_step, score;
+int ev, app_st, input_st,  score;
 int b1_up_ct, b1_dn_ct, tick_ct, hb_timer;
+int bright=BRIGHT_START;
 unsigned long inactive_ctr;
+
+//Adafruit_NeoPixel pixels(2*PIX_PER_DIG, PIX_IO, NEO_GRB + NEO_KHZ800);
+CRGB pixels[2*PIX_PER_DIG];
+
+
+CRGB cur_color_msb, cur_color_lsb;
+
+
+const int seg_pix[N_DIG][N_SEG] = 
+{ 
+  {0+PIX_PER_DIG, 4+PIX_PER_DIG, 7+PIX_PER_DIG,  10+PIX_PER_DIG,  13+PIX_PER_DIG,  17+PIX_PER_DIG, 20+PIX_PER_DIG}, 
+  {0,             4,             7,              10,              13,              17,             20}, 
+}; 
+const int seg_pix_len[N_DIG][N_SEG] = 
+{ 
+  {4, 3, 3, 3, 4, 3, 3}, 
+  {4, 3, 3, 3, 4, 3, 3}, 
+}; 
+
+// segment bitmap for each digit
+const int seg_bitmap[2][10] = 
+{ // MSB,LSB
+  {0            , 1+2,  32+16+64+2+4, 32+16+64+8+4, 1+64+16+8, 32+1+64+8+4, 32+1+2+4+8+64, 32+16+8, 1+2+4+8+16+32+64, 1+32+16+64+8}, 
+  {1+2+4+8+16+32, 8+16, 32+16+64+2+4, 32+16+64+8+4, 1+64+16+8, 32+1+64+8+4, 32+1+2+4+8+64, 32+16+8, 1+2+4+8+16+32+64, 1+32+16+64+8} 
+};
 
 void disp_seg(int pos, int x)
 {
-  for (int i=0; i<(N_SEG); i++)  
-    digitalWrite(seg_gpio[pos][i], ( ( x & (1<<i) ) ) ? HIGH:LOW ); 
+
+  for (int i=0; i<(N_SEG); i++)
+  {  
+    int pixel_num;
+    int pixel_len;
+    CRGB pixel_val;
+
+    if (pos == 0)    
+      pixel_val = ( ( x & (1<<i) ) ) ? cur_color_msb:0;
+    else      
+      pixel_val = ( ( x & (1<<i) ) ) ? cur_color_lsb:0;
+    pixel_num = seg_pix[pos][i];
+    pixel_len = seg_pix_len[pos][i]; 
+
+    for (int j=0; j<pixel_len; ++j)
+      pixels[pixel_num+j] = pixel_val;  
+ 
+  }
 }
-
-
-
 
 void show_score(int the_score)
 {
   int seg_val;
 
+  //sprintf(buf,  "SHOW_SCORE MSB: score=%d", the_score);
+  //DBG_MSG( buf  );
   seg_val = seg_bitmap[MSB_DIG][int(the_score / 10)];
   disp_seg(MSB_DIG, seg_val); // set LEFT (MSB)
+
   seg_val = seg_bitmap[LSB_DIG][the_score % 10];
   disp_seg(LSB_DIG, seg_val); // set RIGHT (LSB)
+
+  FastLED.show();
 }      
 
 void reset_input_state(int st)
@@ -133,19 +152,13 @@ void reset_input_state(int st)
   input_st = st;
 }
 
+
 void setup() 
 {
 
-  app_st = STATE_IDLE;
-  reset_state();
+  FastLED.addLeds<WS2812, LED_PIN, GRB>(pixels, (PIX_PER_DIG*2)).setCorrection( TypicalLEDStrip );
+  FastLED.setBrightness(  bright );
 
-  // 2^n divisor, ie:
-  // 0 = normal
-  // 1 = factor of 2
-  // 4 = factor of 16, 1mhz (500ms to 8)
-  // 5 = factor of 32, 500khz (500ms to 16s)
-//  CLKPR = 0x80;
-//  CLKPR = 0x01;  
 
 #ifdef USES_UART
   Serial.begin(115200);// 115200
@@ -153,94 +166,61 @@ void setup()
   delay(100); //Take some time to open up the Serial Monitor
 #endif  
 
-  DBG_MSG("starting...");
+  // These lines are specifically to support the Adafruit Trinket 5V 16 MHz.
+  // Any other board, you can remove this part (but no harm leaving it):
+#if defined(__AVR_ATtiny85__) && (F_CPU == 16000000)
+  clock_prescale_set(clock_div_1);
+#endif
+  // END of Trinket-specific code.
+  app_st = STATE_IDLE;
+  reset_state();
 
+  // orange/navy blue
+  cur_color_msb = CHSV( 20, 255, 255);
+  cur_color_lsb = CHSV( 171, 255, 255);
+
+  
+  DBG_MSG("starting");
 
 }
+void wake_int()
+{
+ 
+}
 
-
-// the loop function runs over and over again forever
 void loop() {
+
   delay(TICK_RATE);
 
   input_sm();
   app_sm();
-  analogWrite(PWM_MOD, pwm_val);
 
-  // LED test pattern
-  if (app_st != STATE_SELFTEST)
-  {
-    digitalWrite(BOARD_LED,  (hb_timer > HB_CMP) ? HIGH:LOW );  // turn the LED on for a small period of time
-  }
-  else
-  {
-    digitalWrite(BOARD_LED,  ( (hb_timer / 8) % 2 ) ? HIGH:LOW );  // blink the LED at ~10 Hz
-  }
-  if (++hb_timer > HB_MAX) hb_timer = 0;
 
-#if 1
+
   if (app_st == STATE_SLEEP || app_st == STATE_INACTIVITY_SLEEP)
   {
-    int spurious_wakeup = 1;
 
-    // prepare IO for sleep
-    disable_io();     
-
-    //Go to sleep now
-    DBG_MSG("Waiting for button to clear");
-    while (digitalRead(BUT1) == STATE_DN) delay(10); // wait for finger off button
-
-    // Allow wake up pin to trigger interrupt on low.
-    attachInterrupt(0, wakeUp, LOW);
-      
-    while (spurious_wakeup == 1)  
-    {
-        // Enter power down state with ADC and BOD module disabled.
-        // Wake up when wake up pin is low.
-        LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF); 
-
-        if ( digitalRead(BUT1) == STATE_DN )
-          spurious_wakeup = 0; // button should be down for true wake-up request
-    }
-
-
-    // Disable external pin interrupt on wake up pin.
-    detachInterrupt(0); 
-
-    // reset everythibg
-    reset_state();
+    corn_sleep();
 
   }
-#endif
-
 }
 
 // handle input events, convert input events to app states
 void app_sm()
 {
   int seg_val;
+  
   if (app_st == STATE_SELFTEST)
   {
-    if (br_step < 114)   // cycle through brightness
-    {
-      pwm_val = int(PWM_MAX2 - PWM_MAX2*cos(2 * 2 * 3.1415 * br_step / 100 ));
-      disp_seg(MSB_DIG, 127);
-      disp_seg(LSB_DIG, 127);
-      br_step = br_step + 1;
-    }
-    else if (br_step < 200)
-    {
-      seg_val = seg_bitmap[MSB_DIG][0];
-      disp_seg(MSB_DIG, seg_val);
-      seg_val = seg_bitmap[LSB_DIG][SCORE_NODEC_VER];
-      disp_seg(LSB_DIG, seg_val);
-      br_step = br_step + 1;
-    }
-    else
-    {
+    
+    // show version
+    show_score(SW_VERSION);
+    delay(ST_DEL);
+
+    if (tick_ct > ST_TERM)
       app_st = STATE_IDLE;
-      pwm_val = last_pwm_val;
-    }
+
+
   }
   else if (app_st == STATE_IDLE)
   {
@@ -259,29 +239,60 @@ void app_sm()
     }
     else if (ev == EVENT_VERY_LONG_PRESS) 
     {
-      score = 0;
+      score = 0; // 88
       DBG_MSG("resetting score");
     }
     else if (ev == EVENT_DOUBLE_PRESS)
     {
-      if (pwm_val == PWM_MAX)        pwm_val = PWM_L1;
-      else if (pwm_val == PWM_L1)    pwm_val = PWM_L2;
-      else if (pwm_val == PWM_L2)    pwm_val = PWM_L3;
-      else if (pwm_val == PWM_L3)    pwm_val = PWM_L4;
-      else if (pwm_val == PWM_L4)    pwm_val = PWM_MAX;
+      // TBD cycle through brightness
       DBG_MSG("change brightness");
-
+      if (bright == 1)
+        bright = 4;
+      else if (bright == 4)
+        bright = 16;
+      else if (bright == 16)
+        bright = 64;
+      else if (bright == 64)
+        bright = 128;
+      else if (bright == 128)
+        bright = 255;
+      else if (bright == 255)
+        bright = 1;
+      FastLED.setBrightness(  bright );
     }
+    else if (ev == EVENT_DOUBLE_LONG_PRESS)
+    {
+      #if 1
+        score = 88;
+      #else        
+        app_st = STATE_SLEEP;
+        DBG_MSG("Going to sleep(dblpress)");
+        delay(100);
+      #endif        
+    }
+    else if (ev == EVENT_DOUBLE_VERY_LONG_PRESS)
+    {
+      app_st = STATE_SLEEP;
+      DBG_MSG("Going to sleep(dbl+very_long_press)");
+      delay(100);
+    }    
+    else if (ev == EVENT_DOUBLE_SUPER_LONG_PRESS)
+    {
+      
+      cur_color_msb = CRGB( 255, 255, 255);
+      cur_color_lsb = CRGB( 255, 255, 255);
+      //for (int i=0; i<6; ++i) base_color[i] = 256;
+    }    
     else if (ev == EVENT_SUPER_LONG_PRESS)
     {
       app_st = STATE_SLEEP;
-      last_pwm_val = pwm_val;
+      DBG_MSG("Going to sleep");
+      delay(100);
     }
     else if (ev == EVENT_TIMEOUT1)
     {
       app_st = STATE_INACTIVITY_REDUCEBRIGHT;
-      last_pwm_val = pwm_val;
-      pwm_val = PWM_L1;
+      // TBD reduce brightness to inactivity value
     }
     show_score(score);
   }
@@ -291,8 +302,7 @@ void app_sm()
     {
       // transition back to full power operation
       app_st = STATE_IDLE;
-      pwm_val = last_pwm_val;
-      while (digitalRead(BUT1) == STATE_DN) 
+      while (digitalRead(BUT_PIN) == STATE_DN) 
         delay(10);
       reset_input_state(INPUT_STATE_IDLE);
       delay(10);
@@ -310,8 +320,8 @@ void input_sm()
   ev = EVENT_NONE;
 
   // detect buttons
-  if ( digitalRead(BUT1) == STATE_DN ) b1_dn_ct = b1_dn_ct + 1;
-  if ( digitalRead(BUT1) == STATE_UP ) b1_up_ct = b1_up_ct + 1;
+  if ( digitalRead(BUT_PIN) == STATE_DN ) b1_dn_ct = b1_dn_ct + 1;
+  if ( digitalRead(BUT_PIN) == STATE_UP ) b1_up_ct = b1_up_ct + 1;
   
   if (b1_dn_ct > 0) 
     inactive_ctr = 0;
@@ -386,6 +396,32 @@ void input_sm()
       reset_input_state(INPUT_STATE_IDLE);
       DBG_MSG("double press detected");   
     }
+    else if (b1_dn_ct >= BUTTON_LONG_CT)
+    {
+      // down button continues to be held instead of released, move to "double_xxx_press"
+      reset_input_state(INPUT_STATE_DOUBLE_LONGPRESS);
+    }
+  }
+  else if (input_st == INPUT_STATE_DOUBLE_LONGPRESS)
+  {
+    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_LONG_CT)
+    {
+      ev = EVENT_DOUBLE_LONG_PRESS;
+      reset_input_state(INPUT_STATE_IDLE);
+      DBG_MSG("double+long press detected");   
+    }      
+    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_VERY_LONG_CT)
+    {
+      ev = EVENT_DOUBLE_VERY_LONG_PRESS;
+      reset_input_state(INPUT_STATE_IDLE);
+      DBG_MSG("double+very long press detected");   
+    }
+    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_SUPER_LONG_CT)
+    {
+      ev = EVENT_DOUBLE_SUPER_LONG_PRESS;
+      reset_input_state(INPUT_STATE_IDLE);
+      DBG_MSG("double+super long press detected");
+    }      
   }
   else if ( input_st == INPUT_STATE_HOLD)
   {    
@@ -395,43 +431,42 @@ void input_sm()
     // check for super long hold
     else if ( b1_dn_ct >= BUTTON_SUPER_LONG_CT)
     {
+      DBG_MSG("super long press detectedd");
       reset_input_state(INPUT_STATE_IDLE);
       ev = EVENT_SUPER_LONG_PRESS;
     }
     // check for very long hold
     else if (b1_dn_ct >= BUTTON_VERY_LONG_CT)
+    {
+      DBG_MSG("very long press detectedd");
       ev = EVENT_VERY_LONG_PRESS;
+    }
     else if ( b1_dn_ct >= BUTTON_LONG_CT ) // check for super long hold
+    {
+      DBG_MSG("long press detected");
       ev = EVENT_LONG_PRESS;
+    }
   }
 }
 
 
-
-void wakeUp()
-{
-    // Just a handler for the pin interrupt.
-}
 void reset_state()
 {
   // initial values for persistent variables
   if (app_st == STATE_INACTIVITY_SLEEP || app_st == STATE_SLEEP)
   {
-    // waking up from inactivity timeout: resume
+    // waking up from inactivity timeout or sleep: resume
     app_st = STATE_IDLE;
-    pwm_val = last_pwm_val;
   }
   else
   {
-    last_pwm_val = PWM_DEF;
-    // powerup or waking up from manual shutdown: restart
+    // "cold start" powerup or waking up from manual shutdown: restart
     app_st = STATE_SELFTEST;
     score = 0;
-    //pwm_val = PWM_DEF; // will be set after selftest
+
   }
   ev = EVENT_NONE;
   input_st = INPUT_STATE_IDLE;
-  br_step = 0;
   b1_up_ct = 0;
   b1_dn_ct = 0;
   tick_ct = 0;
@@ -445,47 +480,81 @@ void reset_state()
 
 void disable_io()
 {
-  // make everything high impedience
-  pinMode(BOARD_LED, INPUT);
-  pinMode(BUT1, INPUT_PULLUP);
-  pinMode(PWM_MOD, INPUT);
-  for (int i=0; i<N_SEG; i++)
-  {
-    pinMode(seg_gpio[MSB_DIG][i], INPUT);
-    pinMode(seg_gpio[LSB_DIG][i], INPUT);
-  }
 
-  // shut down switched +5 and +12v supplies
-  pinMode(V12_EN, INPUT);
+  // make everything high impedience
+  DDRB = 0x00;
+  PORTB = 0x00;
+  DDRC = 0x00;
+  PORTC = 0x00;
+  DDRD = 0x00;
+  PORTD = 0x00;
+  pinMode(BUT_PIN, INPUT_PULLUP);
 }
 
 void enable_io()
 {
-  // set initial states to off to avoid initial surge
-  disp_seg(MSB_DIG, 0);
-  disp_seg(LSB_DIG, 0);
-
-  // initialize digital pin BOARD_LED as an output.
-  pinMode(V12_EN, OUTPUT);
-  // enable switch 5v and 12v supply
-  digitalWrite(V12_EN, LOW); // enable 12 volt supply
-  delay(200);
-
-  pinMode(BOARD_LED, OUTPUT);
-  pinMode(BUT1, INPUT_PULLUP);
-  pinMode(PWM_MOD, OUTPUT);
-  // set PWM frequency (clock sensitive)
-  // PRE: 1=1, 2=8, 3=32, 4=64, 5=128, 6=256, 7=1024
-  TCCR2B = TCCR2B & B11111000 |    B00000011;    // set timer 2 divisor to     1 for PWM frequency of 31372.55 Hz
-  for (int i=0; i<N_SEG; i++)
-  {
-      pinMode(seg_gpio[MSB_DIG][i], OUTPUT);
-      pinMode(seg_gpio[LSB_DIG][i], OUTPUT);
-  }
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(ENABLE_PIN, OUTPUT);
+  pinMode(BUT_PIN, INPUT_PULLUP);
 
   // wire unused inputs to high, thie sames current
-  ADCSRA = 0; 
-
+  //ADCSRA = 0; SSSSSSSSSS 
+  digitalWrite(ENABLE_PIN, 1);
 // {TBD} set unconnected pins to INPUT_PULLUP
 
+}
+
+
+void corn_sleep()
+{
+    int spurious_wakeup = 1;
+
+    //FastLED.clearData();
+    for (int i=0; i<2*PIX_PER_DIG; ++i)
+      pixels[i] = 0x00;  
+    FastLED.show();
+
+    // prepare IO for sleep
+    disable_io();     
+
+    //Go to sleep now
+    DBG_MSG("Sleep: wait for button to clear");
+    while (digitalRead(BUT_PIN) == STATE_DN) delay(10); // wait for finger off button
+
+    DBG_MSG("Sleep: go to sleep now");
+    // Allow wake up pin to trigger interrupt on low.
+
+    //attachInterrupt(), wake_int, FALLING);
+    attachInterrupt(digitalPinToInterrupt(BUT_PIN), wake_int, FALLING);
+
+    while (spurious_wakeup == 1)  
+    {
+        // Enter power down state with ADC and BOD module disabled.
+        // Wake up when wake up pin is low.
+        // LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF); 
+        // disable ADC
+        ADCSRA &= ~(1<<7);
+        // enable sleep
+        SMCR |=(1<<2); // power down mode
+        SMCR |=1; // enable sleep
+        // BOD disable
+        MCUCR != (3<<5); // set both the BODS and BODSE at same time
+        MCUCR = (MCUCR & ~(1<<5)) | (1<<6); // then set the BODS bit and clear the BODSE bit at the same time
+        __asm__ __volatile__("sleep");
+
+        // if the wakeup request is legit (it not "spurious"), the button should be in a "down" state.
+        // if not the case, go back to sleep 
+        if ( digitalRead(BUT_PIN) == STATE_DN )
+          spurious_wakeup = 0; // button should be down for true wake-up request
+    }
+    // Disable external pin interrupt on wake up pin.
+    detachInterrupt(0); 
+
+    delay(200);
+    DBG_MSG("Sleep: Wake");
+    //while (1);
+
+
+//    // reset everythibg
+    reset_state();
 }
