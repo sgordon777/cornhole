@@ -7,12 +7,15 @@ v  MSB/0      v  LSB/1
 |23       |   |0        |        
 |         |   |         |
 |         |   |         |
-|---------|   |22-------|
+|45-------|   |22-------|
 |         |   |         |
 |         |   |         |
 |29     33|   |6      10|
 ----------    ----------
 
+flashlight  
+46	47	48	49
+O   O   O   O
 
 Single press                  increment score
 Hold                          decrement score
@@ -20,8 +23,10 @@ Hold 2s                       Zero score
 Hold 5s                       sleep
 Double click                  Cycle brightness
 Double click +Hold 2s         Cycle color scheme
-Double click +Hold 5s         88
+Double click +Hold 5s         Flashlight
 Double click +Hold 10s        sleep
+Double click +Hold 15s        selftest
+Double click +Hold 20s        88
 Inactive 15m                  decrease brightness
 Inactive 30m                  sleep
 

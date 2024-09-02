@@ -1,4 +1,4 @@
-//
+  //
 //
 // Cornhole, Neo-pixel
 //
@@ -14,9 +14,12 @@
 //      v4: 8/24/2024
 //        -bitmaps
 //        -lights for esp32
-//      V5: ??
+//      V5: 8/30/2024
 //        -Read bus voltage
-//        -Refuse to start if bus voltage < 3.0
+//        -flashlight
+//        -self brightness computation (needed for flashlight)
+//        -brighten up MSU, miller, redwings color schemes
+//
 //
 
 #include <FastLED.h>
@@ -40,16 +43,22 @@ char buf[256];
 #define ENABLE_PIN (3)
 #elif defined(ESP32)
 #define BUT_PIN (16)
+#define BUSV_PIN (3)
 #define LED_PIN (18)  // On Trinket or Gemma, suggest changing this to 1
 #define HB_PIN (15)
 #define ENABLE_PIN (33)
+#define QADC_TO_Q32 (19)
+#define ADC_MAXC (8192)
+#define ADC_MAXV (2.54)
+
 #else #error unsupported platform
 #endif
 // params
 #define BRIGHT_START (64)
-#define SW_VERSION (4)
+#define SW_VERSION (5)
 #define ST_DEL (100)
-#define ST_TERM (200)
+#define VER_DEL (100)
+#define ST_TERM (500)
 
 // config
 #define N_DIG (2)
@@ -69,8 +78,10 @@ char buf[256];
 #define EVENT_TIMEOUT1 (7)
 #define EVENT_TIMEOUT2 (8)
 #define EVENT_DOUBLE_LONG_PRESS (9)
-#define EVENT_DOUBLE_VERY_LONG_PRESS (10)
-#define EVENT_DOUBLE_SUPER_LONG_PRESS (11)
+#define EVENT_DOUBLE_5S_PRESS (10)
+#define EVENT_DOUBLE_10S_PRESS (11)
+#define EVENT_DOUBLE_15S_PRESS (12)
+#define EVENT_DOUBLE_20S_PRESS (14)
 // inputsm states
 #define INPUT_STATE_IDLE (0)
 #define INPUT_STATE_DOWN (1)
@@ -91,8 +102,10 @@ char buf[256];
 #define BUTTON_DEBOUNCE_CT (2)
 #define BUTTON_HALFSEC_HOLD_CT (50)
 #define BUTTON_TWOSEC_HOLD_CT (200)
-#define BUTTON_FIVESEC_HOLD_CT (500)
-#define BUTTON_TENSEC_HOLD_CT (1000)
+#define BUTTON_5SEC_HOLD_CT (500)
+#define BUTTON_10SEC_HOLD_CT (1000)
+#define BUTTON_15SEC_HOLD_CT (1500)
+#define BUTTON_20SEC_HOLD_CT (2000)
 #define CT_RATE (20)
 #define HB_CMP (199)
 #define HB_MAX (200)
@@ -121,8 +134,11 @@ char buf[256];
 // all persistent variables here
 RTC_DATA_ATTR int ev, app_st, input_st, score, scheme, color_mode;
 RTC_DATA_ATTR int b1_up_ct, b1_dn_ct, tick_ct, hb_timer;
-RTC_DATA_ATTR int bright, bright_prev;
+RTC_DATA_ATTR unsigned bright, bright_prev;
 unsigned long inactive_ctr;
+uint32_t busv_f; 
+float busv_f_v;
+int flashlight;
 CRGBPalette16 currentPalette = RainbowColors_p;
 
 #ifdef ESP32
@@ -132,11 +148,13 @@ RTC_DATA_ATTR int bootCount = 0;
 
 
 //Adafruit_NeoPixel pixels(2*PIX_PER_DIG, PIX_IO, NEO_GRB + NEO_KHZ800);
-CRGB pixels[2 * PIX_PER_DIG];
+#define FLASHLIGHT_PIX_OFFS (2 * PIX_PER_DIG)
+#define FLASHLIGHT_PIX_COUNT (4)
+CRGB pixels[2 * PIX_PER_DIG + FLASHLIGHT_PIX_COUNT];
 
 //color scheme table                   white              tigers               MSU                    Miller Lite          RedWings
-CRGB msb_color[COLOR_SCHEME_COUNT] = { CRGB(255,255,255), CHSV(20, 255, 255),  CRGB(255,255,255),     CHSV(36, 187, 186),  CRGB(255,255,255)  };
-CRGB lsb_color[COLOR_SCHEME_COUNT] = { CRGB(255,255,255), CHSV(171, 255, 255), CHSV(95, 209.92, 77),  CHSV(160, 255, 76),  CHSV(250, 255, 236) }; 
+CRGB msb_color[COLOR_SCHEME_COUNT] = { CRGB(255,255,255), CHSV(20, 255, 255),  CRGB(255,255,255),     CHSV(36, 187, 255),  CRGB(255,255,255)  };
+CRGB lsb_color[COLOR_SCHEME_COUNT] = { CRGB(255,255,255), CHSV(171, 255, 255), CHSV(95, 209.92, 255),  CHSV(160, 255, 255),  CHSV(250, 255, 255) }; 
 
 
 // segment bitmaps
@@ -161,12 +179,31 @@ void disp_seg(int pos, uint32_t pix_bitmap) {
 
   for (int i = 0; i < PIX_PER_DIG; i++) 
   {
-    if (color_mode == COLOR_MODE_PALLETE_ROT) 
-      cur_color = ColorFromPalette( currentPalette, i+ctr+23, 255, LINEARBLEND);
-    pixels[i+offs] = ((pix_bitmap & (1 << i))) ? cur_color : 0;
+    if (color_mode == COLOR_MODE_PALLETE_ROT) cur_color = ColorFromPalette( currentPalette, i+ctr+23, 255, LINEARBLEND);
+    CRGB color_bright = apply_brightness(cur_color, bright);
+    pixels[i+offs] = ((pix_bitmap & (1 << i))) ? color_bright : 0;
   }
   ++ctr;
 
+}
+
+CRGB apply_brightness(CRGB in_pix, unsigned bright)
+{
+  CRGB retval;
+
+  int r = in_pix.red;
+  int b = in_pix.blue;
+  int g = in_pix.green;
+
+  r = r * bright >> 8;
+  b = b * bright >> 8;
+  g = g * bright >> 8;
+
+  retval.red = r;
+  retval.blue = b;
+  retval.green = g;
+
+  return (retval);
 }
 
 void show_score(int the_score) {
@@ -211,7 +248,8 @@ void setup() {
   print_wakeup_reason();
 #endif
 
-  FastLED.addLeds<WS2812, LED_PIN, GRB>(pixels, (PIX_PER_DIG * 2)).setCorrection(TypicalLEDStrip);
+  FastLED.addLeds<WS2812, LED_PIN, GRB>(pixels, (PIX_PER_DIG * 2 + FLASHLIGHT_PIX_COUNT)).setCorrection(TypicalLEDStrip);
+
 
   // These lines are specifically to support the Adafruit Trinket 5V 16 MHz.
   // Any other board, you can remove this part (but no harm leaving it):
@@ -235,6 +273,16 @@ void loop() {
   if (++hb_timer > HB_MAX) hb_timer = 0;
 
 
+#ifdef ESP32
+  // filtered bus voltage
+  uint32_t rawv = read_bus_v(busv_f); 
+  // filtered bus volatege in voltage units
+  busv_f_v = 2*ADC_MAXV*(float)busv_f/(float)4294967296; 
+#else
+  busv_f = 0;
+  busv_f_v = 3.3;
+#endif  
+
   delay(TICK_RATE);
 
   input_sm();
@@ -257,17 +305,16 @@ void app_sm() {
   int seg_val;
 
   if (app_st == STATE_SELFTEST) {
-
     if (tick_ct < ST_DEL)
     {
       score=88;
-    }
-
-    if (tick_ct >= ST_DEL) {
+    } else if (tick_ct < ST_DEL+VER_DEL)  {
       // show version
       score=SW_VERSION;
+    } else if (tick_ct < ST_TERM) {
+      // show the battery voltage
+      score = busv_f_v * 10;  
     }
-
     if (tick_ct > ST_TERM) {
       app_st = STATE_IDLE;
       score = 0;
@@ -304,20 +351,26 @@ void app_sm() {
         bright = 255;
       else if (bright == 255)
         bright = 4;
-#endif        
-      FastLED.setBrightness(bright);
+#endif
     } else if (ev == EVENT_DOUBLE_LONG_PRESS) {
       // change color scheme
       scheme = scheme + 1;
       if (scheme >= COLOR_SCHEME_COUNT) scheme = 0;
-    } else if (ev == EVENT_DOUBLE_VERY_LONG_PRESS) {
+    } else if (ev == EVENT_DOUBLE_5S_PRESS)  {
+      flashlight = 1 - flashlight;
+      for (int i=0; i<FLASHLIGHT_PIX_COUNT; ++i) pixels[FLASHLIGHT_PIX_OFFS + i] = 0xFFFFFF * flashlight;
+    } else if (ev == EVENT_DOUBLE_10S_PRESS) {
+      // change score to 88 (debug)
       // go to sleep (debug)
       app_st = STATE_SLEEP;
       DBG_MSG("Going to sleep(dbl+very_long_press)");
       delay(100);
-    } else if (ev == EVENT_DOUBLE_SUPER_LONG_PRESS) {
-      // change score to 88 (debug)
-      score = 88;
+    } else if (ev == EVENT_DOUBLE_15S_PRESS) {
+      app_st = STATE_SELFTEST;
+      tick_ct = 0;
+      DBG_MSG("Run Selftest");
+    } else if (ev == EVENT_DOUBLE_20S_PRESS) {
+      score = 77;
     } else if (ev == EVENT_SUPER_LONG_PRESS) {
       app_st = STATE_SLEEP;
       DBG_MSG("Going to sleep");
@@ -326,15 +379,12 @@ void app_sm() {
       app_st = STATE_INACTIVITY_REDUCEBRIGHT;
       bright_prev = bright;
       bright = 16;
-      FastLED.setBrightness(bright);
-      // TBD reduce brightness to inactivity value
     }
     show_score(score);
   } else if (app_st == STATE_INACTIVITY_REDUCEBRIGHT) {
     if (inactive_ctr < INACTIVITY_THRESH1_CT) {
       // transition back to full power operation
       bright = bright_prev;
-      FastLED.setBrightness(bright);
       app_st = STATE_IDLE;
 //      while (digitalRead(BUT_PIN) == STATE_DN)
 //        delay(10);
@@ -416,27 +466,38 @@ void input_sm() {
       reset_input_state(INPUT_STATE_DOUBLE_LONGPRESS);
     }
   } else if (input_st == INPUT_STATE_DOUBLE_LONGPRESS) {
-    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_TWOSEC_HOLD_CT) {
-      ev = EVENT_DOUBLE_LONG_PRESS;
-      reset_input_state(INPUT_STATE_IDLE);
-      DBG_MSG("double+long press detected");
-    }
-    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_FIVESEC_HOLD_CT) {
-      ev = EVENT_DOUBLE_VERY_LONG_PRESS;
-      reset_input_state(INPUT_STATE_IDLE);
-      DBG_MSG("double+very long press detected");
-    }
-    if (b1_up_ct >= BUTTON_WAIT_CT && b1_dn_ct <= BUTTON_TENSEC_HOLD_CT) {
-      ev = EVENT_DOUBLE_SUPER_LONG_PRESS;
-      reset_input_state(INPUT_STATE_IDLE);
-      DBG_MSG("double+super long press detected");
-    }
-  } else if (input_st == INPUT_STATE_HOLD) {
+    if (b1_up_ct >= BUTTON_WAIT_CT) {
+      // let go of button, check down ct
+      if (b1_dn_ct <= BUTTON_TWOSEC_HOLD_CT) {
+        ev = EVENT_DOUBLE_LONG_PRESS;
+        reset_input_state(INPUT_STATE_IDLE);
+        DBG_MSG("double + long press detected");
+      } else if (b1_dn_ct <= BUTTON_5SEC_HOLD_CT) {
+        ev = EVENT_DOUBLE_5S_PRESS;
+        reset_input_state(INPUT_STATE_IDLE);
+        DBG_MSG("double + 5s press detected");
+      }
+      else if (b1_dn_ct <= BUTTON_10SEC_HOLD_CT) {
+        ev = EVENT_DOUBLE_10S_PRESS;
+        reset_input_state(INPUT_STATE_IDLE);
+        DBG_MSG("double + 10s press detected");
+      } else if (b1_dn_ct <= BUTTON_15SEC_HOLD_CT) {
+        ev = EVENT_DOUBLE_15S_PRESS;
+        reset_input_state(INPUT_STATE_IDLE);
+        DBG_MSG("double + 15s press detected");
+      } else if (b1_dn_ct <= BUTTON_20SEC_HOLD_CT) {
+        ev = EVENT_DOUBLE_20S_PRESS;
+        reset_input_state(INPUT_STATE_IDLE);
+        DBG_MSG("double + 20s press detected");
+      }
+    }      
+  } 
+  else if (input_st == INPUT_STATE_HOLD) {
     // wait for stable up
     if (b1_up_ct >= BUTTON_DEBOUNCE_CT)
       reset_input_state(INPUT_STATE_IDLE);
     // check for super long hold
-    else if (b1_dn_ct >= BUTTON_FIVESEC_HOLD_CT) {
+    else if (b1_dn_ct >= BUTTON_5SEC_HOLD_CT) {
       DBG_MSG("super long press detectedd");
       reset_input_state(INPUT_STATE_IDLE);
       ev = EVENT_SUPER_LONG_PRESS;
@@ -486,10 +547,13 @@ int sleep_woke;
   tick_ct = 0;
   hb_timer = 0;  // maintains persistence across sleep
   inactive_ctr = 0;
+  busv_f = 0;
+  busv_f_v = 0;
+  flashlight = 0;
   // setup HW
 
   enable_io();
-  FastLED.setBrightness(bright);
+  FastLED.setBrightness(255);
 
 }
 
@@ -513,6 +577,7 @@ void enable_io() {
   pinMode(ENABLE_PIN, OUTPUT);
   pinMode(BUT_PIN, INPUT_PULLUP);
   pinMode(HB_PIN, OUTPUT);
+  pinMode(BUSV_PIN, INPUT);
   delay(250);
   // wire unused inputs to high, thie sames current
   //ADCSRA = 0; SSSSSSSSSS
@@ -593,3 +658,4 @@ void print_wakeup_reason(){
     default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
   }
 }
+
