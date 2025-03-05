@@ -20,6 +20,9 @@
 //        -self brightness computation (needed for flashlight)
 //        -brighten up MSU, miller, redwings color schemes
 //
+// LIBS:                            tested version
+//    FASTLED                       3.7.0
+//    esp32 by espressIF systems    2.017
 //
 
 #include <FastLED.h>
@@ -276,6 +279,7 @@ void loop() {
 #ifdef ESP32
   // filtered bus voltage
   uint32_t rawv = read_bus_v(busv_f); 
+  //uint32_t rawv = 0;
   // filtered bus volatege in voltage units
   busv_f_v = 2*ADC_MAXV*(float)busv_f/(float)4294967296; 
 #else
