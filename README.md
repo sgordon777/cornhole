@@ -1,0 +1,112 @@
+Cornhole scorekeeper application. Uses 7-segment display (consisting of strips of RGB LEDs) to show score. 
+UI is done trough a single button:
+
+
+LED MAP
+
+22            GPIO
+|             |
+v  MSB/0      v  LSB/1
+----------     ----------
+|23       |   |0        |        
+|         |   |         |
+|         |   |         |
+|45-------|   |22-------|
+|         |   |         |
+|         |   |         |
+|29     33|   |6      10|
+----------    ----------
+
+flashlight  
+46	47	48	49
+O   O   O   O
+
+Button UI:
+---------------------------------------------------
+Single press (asleep)         turn on
+Single press (awake)          increment score by 1
+Hold                          decrement score by 1
+Hold 2s                       Zero score
+Hold 5s                       sleep
+Double click                  Cycle brightness
+Double click +Hold 2s         Cycle color scheme
+Double click +Hold 5s         Flashlight
+Double click +Hold 10s        sleep
+Double click +Hold 15s        selftest
+Double click +Hold 20s        display "88" (test elements)
+Inactive 15 min               decrease brightness
+Inactive 30 min               sleep
+
+
+  num   seg_map
+  0     1+2+4+8+16+32
+  1     1+2
+  2     32+16+64+2+4
+  3     32+16+64+8+4
+  4     1+64+16+8
+  5     32+1+64+8+4
+  6     32+1+2+4+8+64     
+  7     32+16+8
+  8     1+2+4+8+16+32+64
+  9     1+32+16+64+8
+
+
+
+
+MSB
+  
+  seg   pixels
+  0     0,1,2,
+  1     4,5,6
+  2     7,8,9
+  3     10,11,12
+  4     14,15,167
+  5     17,18,19
+  6     20,21,22
+
+POWER
+
+4.2v
+  sleep mode          0.025 ma (25ua)
+  0, brightness 128
+
+  5v                                    
+  scenario                                        currrent(ma)       Watts
+  startup deflt                                   223				1
+  startup deflt bright4                           53                0.250
+  startup deflt bright16                          88
+  startup deflt bright128                         406               2
+  startup deflt bright255                         768
+  full bright "88"                                1800              9
+  startup red                                     102
+  startup red bright4                             45
+  startup red bright16                            57
+  startup red bright128                           163
+  startup red bright255                           282
+  full bright "88"                                600
+
+  panel off                                       13
+  CPU sleep1                                      13  (69.5)
+  CPU sleep2                                      0.2 (56.7)
+  CPU sleep3                                      0.0 (56.4)
+  CPU sleep4                                      0.0
+
+  Old monochrome system
+  CPU, no LED                                     13
+  "0" + ring full bright                          400         2
+
+
+  14seg 23pix panel with all lights turned off    30.4
+  FTDI alone:                                     26.1
+  Single pixel full white                         ~40
+
+
+ startup: Display " 0"
+ deflt: (256, 256, 256,256, 256, 256), bright=64
+ red:   (256, 0, 0,256, 0, 0), bright=64
+ tiger theme: (256, 256, 256,256, 256, 256), bright=64
+ sleep1: dead loop waiting for key
+ sleep2: sleep instruction
+ sleep3: ADCSRA
+ sleep4: disable BOD
+
